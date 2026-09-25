@@ -1,0 +1,94 @@
+name: goodevadesk
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: goodevadesk
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - goodevadesk
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d goodevadesk"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    # Redis Stack is used instead of plain Redis because the classification
+    # cache needs RediSearch for similarity matching. Pin this tag when you know
+    # which build you want; the image is tagged <redis-version>-v<stack-version>.
+    image: redis/redis-stack-server:latest
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - goodevadesk
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build:
+      context: .
+      target: build
+    command: sh -c "pnpm db:deploy && pnpm db:seed"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/goodevadesk?schema=public
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - goodevadesk
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      target: runtime
+    # Seluruh isi .env ikut masuk ke container lewat env_file. Blok environment
+    # di bawah lalu menimpa dua connection string supaya aplikasinya menunjuk ke
+    # service di compose ini, bukan ke alamat yang tertulis di .env.
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/goodevadesk?schema=public
+      REDIS_URL: redis://redis:6379
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_API_KEY: ${LLM_API_KEY:?LLM_API_KEY must be set in .env or the shell}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - goodevadesk
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+networks:
+  goodevadesk:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
